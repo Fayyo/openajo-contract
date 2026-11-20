@@ -531,3 +531,108 @@ fn join_full_circle_panics() {
     let d = Address::generate(&f.env);
     f.client.join(&id, &d);
 }
+
+// ---- Status and membership guards -----------------------------------------
+
+fn complete_circle(f: &Fixture, id: u32) {
+    for _ in 0..3u32 {
+        for m in f.members.iter() {
+            f.client.contribute(&id, m);
+        }
+        f.client.settle_cycle(&id);
+    }
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #4)")]
+fn join_active_circle_panics_bad_status() {
+    let f = setup();
+    let id = create_full_circle(&f);
+    assert_eq!(f.client.get_circle(&id).status, CircleStatus::Active);
+    let d = Address::generate(&f.env);
+    f.client.join(&id, &d);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #4)")]
+fn join_completed_circle_panics_bad_status() {
+    let f = setup();
+    let id = create_full_circle(&f);
+    complete_circle(&f, id);
+    assert_eq!(f.client.get_circle(&id).status, CircleStatus::Completed);
+    let d = Address::generate(&f.env);
+    f.client.join(&id, &d);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #4)")]
+fn join_cancelled_circle_panics_bad_status() {
+    let f = setup();
+    let a = &f.members[0];
+    let id = f
+        .client
+        .create_circle(a, &f.token.address, &CONTRIB, &DEPOSIT, &3, &PERIOD);
+    f.client.cancel(&id, a);
+    assert_eq!(f.client.get_circle(&id).status, CircleStatus::Cancelled);
+    let d = Address::generate(&f.env);
+    f.client.join(&id, &d);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #4)")]
+fn leave_active_circle_panics_bad_status() {
+    let f = setup();
+    let id = create_full_circle(&f);
+    f.client.leave(&id, &f.members[1]);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #4)")]
+fn cancel_active_circle_panics_bad_status() {
+    let f = setup();
+    let id = create_full_circle(&f);
+    f.client.cancel(&id, &f.members[0]);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #6)")]
+fn leave_by_non_member_panics_not_member() {
+    let f = setup();
+    let a = &f.members[0];
+    let id = f
+        .client
+        .create_circle(a, &f.token.address, &CONTRIB, &DEPOSIT, &3, &PERIOD);
+    let outsider = Address::generate(&f.env);
+    f.client.leave(&id, &outsider);
+}
+
+#[test]
+fn contribution_in_one_cycle_does_not_count_for_the_next() {
+    let f = setup();
+    let [a, b, c] = &f.members;
+    let id = create_full_circle(&f);
+
+    // Cycle 0: everyone pays and the cycle settles.
+    for m in f.members.iter() {
+        f.client.contribute(&id, m);
+    }
+    f.client.settle_cycle(&id);
+    assert_eq!(f.client.get_circle(&id).current_cycle, 1);
+    let a_balance = f.token.balance(a);
+
+    // Cycle 1: c skips. Its cycle-0 payment must not cover cycle 1, so it is
+    // slashed one contribution, while a and b are not.
+    f.client.contribute(&id, a);
+    f.client.contribute(&id, b);
+    advance_past_deadline(&f, id);
+    f.client.settle_cycle(&id);
+
+    assert_eq!(
+        f.client.get_member(&id, c).deposit_remaining,
+        DEPOSIT - CONTRIB
+    );
+    assert_eq!(f.client.get_member(&id, a).deposit_remaining, DEPOSIT);
+    assert_eq!(f.client.get_circle(&id).slashed_total, CONTRIB);
+    // a paid again in cycle 1 (the cycle-0 payment did not carry over).
+    assert!(f.token.balance(a) < a_balance);
+}

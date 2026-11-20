@@ -456,6 +456,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "ended_at"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "period_secs"
                     },
                     "val": {
@@ -468,6 +476,14 @@
                     },
                     "val": {
                       "u32": 3
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "slashed_total"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
