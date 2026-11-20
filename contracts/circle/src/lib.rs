@@ -40,10 +40,26 @@ impl CircleContract {
         if env.storage().instance().has(&DataKey::Config) {
             panic_with_error!(&env, Error::AlreadyInitialized);
         }
-        env.storage()
-            .instance()
-            .set(&DataKey::Config, &GlobalConfig { admin, reputation });
+        env.storage().instance().set(
+            &DataKey::Config,
+            &GlobalConfig {
+                admin,
+                reputation,
+                open_circle_cap: u32::MAX,
+            },
+        );
         env.storage().instance().set(&DataKey::Count, &0u32);
+        extend_instance(&env);
+    }
+
+    /// Admin only: sets the cap on the number of `Open` circles a single creator
+    /// may have at once. `u32::MAX` means no cap (the initialization default).
+    /// Requires `config.admin` auth.
+    pub fn set_open_circle_cap(env: Env, cap: u32) {
+        let mut config: GlobalConfig = read_config(&env);
+        config.admin.require_auth();
+        config.open_circle_cap = cap;
+        env.storage().instance().set(&DataKey::Config, &config);
         extend_instance(&env);
     }
 
@@ -61,6 +77,15 @@ impl CircleContract {
         if contribution <= 0 || deposit < 0 || size < 2 || period_secs < 3600 {
             panic_with_error!(&env, Error::BadParams);
         }
+
+        // Enforce open circle cap per creator.
+        let config: GlobalConfig = read_config(&env);
+        let open_key = DataKey::OpenCircles(creator.clone());
+        let open_count: u32 = env.storage().persistent().get(&open_key).unwrap_or(0);
+        if open_count >= config.open_circle_cap {
+            panic_with_error!(&env, Error::OpenCircleCapExceeded);
+        }
+
         let id: u32 = env.storage().instance().get(&DataKey::Count).unwrap_or(0);
 
         if deposit > 0 {
@@ -97,6 +122,10 @@ impl CircleContract {
             },
         );
         env.storage().instance().set(&DataKey::Count, &(id + 1));
+        env.storage().persistent().set(&open_key, &(open_count + 1));
+        env.storage()
+            .persistent()
+            .extend_ttl(&open_key, TTL_THRESHOLD, TTL_EXTEND);
         extend_instance(&env);
         events::create(&env, id, &creator);
         id
@@ -143,6 +172,15 @@ impl CircleContract {
             circle.status = CircleStatus::Active;
             circle.started_at = env.ledger().timestamp();
             events::start(&env, circle_id);
+            // Circle activated: decrement creator's open circle count.
+            let open_key = DataKey::OpenCircles(circle.creator.clone());
+            let open_count: u32 = env.storage().persistent().get(&open_key).unwrap_or(0);
+            if open_count > 0 {
+                env.storage().persistent().set(&open_key, &(open_count - 1));
+                env.storage()
+                    .persistent()
+                    .extend_ttl(&open_key, TTL_THRESHOLD, TTL_EXTEND);
+            }
         }
         write_circle(&env, circle_id, &circle);
     }
@@ -207,6 +245,15 @@ impl CircleContract {
         circle.ended_at = env.ledger().timestamp();
         write_circle(&env, circle_id, &circle);
         events::cancel(&env, circle_id);
+        // Circle cancelled: decrement creator's open circle count.
+        let open_key = DataKey::OpenCircles(circle.creator.clone());
+        let open_count: u32 = env.storage().persistent().get(&open_key).unwrap_or(0);
+        if open_count > 0 {
+            env.storage().persistent().set(&open_key, &(open_count - 1));
+            env.storage()
+                .persistent()
+                .extend_ttl(&open_key, TTL_THRESHOLD, TTL_EXTEND);
+        }
     }
 
     /// Member only, while Active: pay this cycle's contribution.

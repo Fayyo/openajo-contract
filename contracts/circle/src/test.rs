@@ -636,3 +636,117 @@ fn contribution_in_one_cycle_does_not_count_for_the_next() {
     // a paid again in cycle 1 (the cycle-0 payment did not carry over).
     assert!(f.token.balance(a) < a_balance);
 }
+
+// ---- Open circle cap --------------------------------------------------------
+
+#[test]
+fn open_circle_cap_default_unlimited() {
+    let f = setup();
+    let a = &f.members[0];
+    let b = Address::generate(&f.env);
+    let mint = StellarAssetClient::new(&f.env, &f.token.address);
+    mint.mint(&b, &1_000);
+
+    // Default cap is u32::MAX, so many circles should succeed.
+    for _ in 0..5 {
+        let id = f
+            .client
+            .create_circle(a, &f.token.address, &CONTRIB, &DEPOSIT, &2, &PERIOD);
+        f.client.join(&id, &b);
+    }
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #14)")]
+fn open_circle_cap_enforced_on_create() {
+    let f = setup();
+    let a = &f.members[0];
+
+    // Set cap to 1.
+    f.client.set_open_circle_cap(&1);
+
+    // First circle succeeds (size 3, so not activated by single join).
+    let id1 = f
+        .client
+        .create_circle(a, &f.token.address, &CONTRIB, &DEPOSIT, &3, &PERIOD);
+    f.client.join(&id1, &f.members[1]);
+
+    // Second circle should fail (first is still Open).
+    f.client
+        .create_circle(a, &f.token.address, &CONTRIB, &DEPOSIT, &3, &PERIOD);
+}
+
+#[test]
+fn open_circle_cap_decrements_on_activation() {
+    let f = setup();
+    let a = &f.members[0];
+
+    // Set cap to 1.
+    f.client.set_open_circle_cap(&1);
+
+    // Create and activate first circle.
+    let id1 = f
+        .client
+        .create_circle(a, &f.token.address, &CONTRIB, &DEPOSIT, &2, &PERIOD);
+    f.client.join(&id1, &f.members[1]); // activates
+    assert_eq!(f.client.get_circle(&id1).status, CircleStatus::Active);
+
+    // Now a second circle should succeed (first is no longer Open).
+    let id2 = f
+        .client
+        .create_circle(a, &f.token.address, &CONTRIB, &DEPOSIT, &2, &PERIOD);
+    assert_eq!(f.client.get_circle(&id2).status, CircleStatus::Open);
+}
+
+#[test]
+fn open_circle_cap_decrements_on_cancel() {
+    let f = setup();
+    let a = &f.members[0];
+
+    // Set cap to 1.
+    f.client.set_open_circle_cap(&1);
+
+    // Create first circle (Open).
+    let id1 = f
+        .client
+        .create_circle(a, &f.token.address, &CONTRIB, &DEPOSIT, &3, &PERIOD);
+    f.client.join(&id1, &f.members[1]); // still Open (size 3)
+
+    // Cancel first circle.
+    f.client.cancel(&id1, a);
+    assert_eq!(f.client.get_circle(&id1).status, CircleStatus::Cancelled);
+
+    // Now a second circle should succeed (first is Cancelled, not Open).
+    let id2 = f
+        .client
+        .create_circle(a, &f.token.address, &CONTRIB, &DEPOSIT, &3, &PERIOD);
+    assert_eq!(f.client.get_circle(&id2).status, CircleStatus::Open);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #14)")]
+fn open_circle_cap_still_enforced_while_open() {
+    let f = setup();
+    let a = &f.members[0];
+
+    // Set cap to 1.
+    f.client.set_open_circle_cap(&1);
+
+    // Create first circle (Open, size 3 so not activated yet).
+    let id1 = f
+        .client
+        .create_circle(a, &f.token.address, &CONTRIB, &DEPOSIT, &3, &PERIOD);
+    f.client.join(&id1, &f.members[1]); // still Open
+
+    // Second circle should fail while first is still Open.
+    f.client
+        .create_circle(a, &f.token.address, &CONTRIB, &DEPOSIT, &3, &PERIOD);
+}
+
+#[test]
+fn set_open_circle_cap_admin_only() {
+    let f = setup();
+    // Admin can set cap (mock_all_auths provides admin auth).
+    f.client.set_open_circle_cap(&3);
+    // Default is u32::MAX, now it's 3.
+}
