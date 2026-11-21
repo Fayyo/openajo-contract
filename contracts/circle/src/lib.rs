@@ -18,7 +18,7 @@ use errors::Error;
 use soroban_sdk::{
     contract, contractclient, contractimpl, panic_with_error, token, vec, Address, Env, Vec,
 };
-use ttl_helpers::extend_instance;
+use ttl_helpers::{extend_instance, extend_persistent};
 use types::{Circle, CircleStatus, DataKey, GlobalConfig, MemberState};
 
 /// Minimal interface of the `reputation` contract (same workspace).
@@ -54,7 +54,7 @@ impl CircleContract {
     /// may have at once. `u32::MAX` means no cap (the initialization default).
     /// Requires `config.admin` auth.
     pub fn set_open_circle_cap(env: Env, cap: u32) {
-        let mut config: GlobalConfig = read_config(&env);
+        let mut config: GlobalConfig = storage::read_config(&env);
         config.admin.require_auth();
         config.open_circle_cap = cap;
         env.storage().instance().set(&DataKey::Config, &config);
@@ -73,6 +73,14 @@ impl CircleContract {
     ) -> u32 {
         creator.require_auth();
         validation::validate_create_params(contribution, deposit, size, period_secs, &env);
+
+        let config: GlobalConfig = storage::read_config(&env);
+        let open_key = DataKey::OpenCircles(creator.clone());
+        let open_count: u32 = env.storage().persistent().get(&open_key).unwrap_or(0);
+        if open_count >= config.open_circle_cap {
+            panic_with_error!(&env, Error::OpenCircleCapExceeded);
+        }
+
         let id: u32 = env.storage().instance().get(&DataKey::Count).unwrap_or(0);
 
         if deposit > 0 {
@@ -110,9 +118,7 @@ impl CircleContract {
         );
         env.storage().instance().set(&DataKey::Count, &(id + 1));
         env.storage().persistent().set(&open_key, &(open_count + 1));
-        env.storage()
-            .persistent()
-            .extend_ttl(&open_key, TTL_THRESHOLD, TTL_EXTEND);
+        extend_persistent(&env, &open_key);
         extend_instance(&env);
         events::create(&env, id, &creator);
         id
@@ -158,9 +164,7 @@ impl CircleContract {
             let open_count: u32 = env.storage().persistent().get(&open_key).unwrap_or(0);
             if open_count > 0 {
                 env.storage().persistent().set(&open_key, &(open_count - 1));
-                env.storage()
-                    .persistent()
-                    .extend_ttl(&open_key, TTL_THRESHOLD, TTL_EXTEND);
+                extend_persistent(&env, &open_key);
             }
         }
         storage::write_circle(&env, circle_id, &circle);
@@ -223,9 +227,7 @@ impl CircleContract {
         let open_count: u32 = env.storage().persistent().get(&open_key).unwrap_or(0);
         if open_count > 0 {
             env.storage().persistent().set(&open_key, &(open_count - 1));
-            env.storage()
-                .persistent()
-                .extend_ttl(&open_key, TTL_THRESHOLD, TTL_EXTEND);
+            extend_persistent(&env, &open_key);
         }
     }
 
